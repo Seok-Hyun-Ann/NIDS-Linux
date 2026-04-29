@@ -27,25 +27,26 @@ behind a model you can't inspect. NAD is the opposite:
 - **Tunable from the command line** — change `--z-threshold`, `--confirm`, and
   `--cooldown` until the signal-to-noise ratio fits your environment.
 
-## Quick demo
+## What you see
+
+The dashboard is a single page served at `http://127.0.0.1:8000`. Five
+sections, all on one screen:
+
+| Section | What it shows |
+|---|---|
+| **Status pill** | `정상 감시중` (green) / `워밍업 N` (yellow) / `오류` (red), plus interface name and uptime |
+| **KPI strip** | Alert counts (1h / 24h / total), top affected feature in the last hour, current packets-per-second |
+| **Alert timeline** | 60-minute histogram of alert density. Bar colour = severity (LOW / MED / HIGH based on \|Z-score\|) |
+| **Detected anomalies** | Sortable table of alerts. Click a row to expand: Korean explanation, top 5 source IPs, top 5 destination IPs, top 5 destination ports, raw stats (current vs baseline, Z-score, direction) |
+| **Live network activity** | Top talkers (source IPs / destination IPs / destination ports) and TCP / UDP / ICMP / OTHER protocol mix for the *current* 1-second window |
+
+Every alert carries a deterministic, one-line explanation built straight from
+the EWMA statistics — no LLM, no template randomisation:
 
 ```text
-┌───────────────────────────────────────────────────────────────┐
-│ NAD · Network Anomaly Detector              [정상 감시중]      │
-├──────────┬──────────┬──────────┬───────────────┬──────────────┤
-│ 1h: 3    │ 24h: 12  │ Total: 47│ unique_dst_ips│ 142 pkt/s    │
-├──────────┴──────────┴──────────┴───────────────┴──────────────┤
-│ Alert timeline (last 60min)                                   │
-│ ▁▁▁▂▁▁▃▁▁▂▁▁▆▃▁▁▁▁▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁    │
-├──────────────────────────────────────┬────────────────────────┤
-│ Detected anomalies   [HIGH][MED][LOW]│ Live network activity  │
-│  14:23:01  HIGH  unique_dst_ips +6.2σ│ Top src IPs            │
-│  14:21:11  MED   tcp_count     +3.4σ │  ▓▓▓▓▓ 192.168.1.10    │
-│  14:18:33  LOW   bytes_total   +3.1σ │  ▓▓▓   151.106.247.9   │
-│   ↳ 평소 대비 6.2σ 초과 (현재 30 IPs,│ Top dst ports          │
-│      기준 11.6 ±2.5). 주요 출발지:   │  ▓▓▓ :443  ▓ :80       │
-│      10.0.0.5 (45), 10.0.0.7 (12)    │ Protocol mix           │
-└──────────────────────────────────────┴────────────────────────┘
+unique_dst_ips — 평소 대비 4.2σ 초과 (현재 30.0 IPs, 기준 11.6 ±2.5).
+주요 출발지: 172.23.14.16(150), 151.106.247.9(77), 64.233.185.95(15).
+주요 목적지 포트: 7338(106), 55544(77), 443(40).
 ```
 
 ## Status
