@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NAD · Network Anomaly Detector</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo-mark">NAD</span>
+      <span class="brand-sub">Network Anomaly Detector</span>
+    </div>
+    <div class="status-strip">
+      <span class="pill" id="pill-state">starting…</span>
+      <span class="kv"><span class="k">iface</span><span class="v" id="meta-iface">—</span></span>
+      <span class="kv"><span class="k">filter</span><span class="v" id="meta-filter">—</span></span>
+      <span class="kv"><span class="k">uptime</span><span class="v" id="meta-uptime">—</span></span>
+      <span class="kv"><span class="k">window</span><span class="v" id="meta-window">—</span></span>
+    </div>
+  </header>
+
+  <main>
+    <section class="kpi-strip">
+      <div class="kpi" data-tone="neutral">
+        <div class="kpi-label">Alerts · 1h</div>
+        <div class="kpi-value" id="kpi-1h">0</div>
+        <div class="kpi-sub" id="kpi-1h-sub">no anomalies</div>
+      </div>
+      <div class="kpi" data-tone="neutral">
+        <div class="kpi-label">Alerts · 24h</div>
+        <div class="kpi-value" id="kpi-24h">0</div>
+        <div class="kpi-sub">rolling window</div>
+      </div>
+      <div class="kpi" data-tone="neutral">
+        <div class="kpi-label">Alerts · total</div>
+        <div class="kpi-value" id="kpi-total">0</div>
+        <div class="kpi-sub" id="kpi-total-sub">since service start</div>
+      </div>
+      <div class="kpi" data-tone="info">
+        <div class="kpi-label">Top affected feature</div>
+        <div class="kpi-value small" id="kpi-feature">—</div>
+        <div class="kpi-sub" id="kpi-feature-sub">last hour</div>
+      </div>
+      <div class="kpi" data-tone="info">
+        <div class="kpi-label">Live throughput</div>
+        <div class="kpi-value" id="kpi-pps">—</div>
+        <div class="kpi-sub" id="kpi-pps-sub">packets / sec</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Alert timeline</h2>
+        <div class="panel-meta">
+          <span class="legend"><span class="dot sev-low"></span>LOW</span>
+          <span class="legend"><span class="dot sev-med"></span>MEDIUM</span>
+          <span class="legend"><span class="dot sev-high"></span>HIGH</span>
+          <span class="panel-sub" id="hist-sub">last 60 min · 1-min bins</span>
+        </div>
+      </div>
+      <div class="histogram" id="histogram"></div>
+      <div class="hist-axis" id="hist-axis"></div>
+    </section>
+
+    <section class="grid-2">
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Detected anomalies</h2>
+          <div class="panel-meta">
+            <div class="filter-bar">
+              <button class="chip active" data-sev="all">전체</button>
+              <button class="chip" data-sev="high">HIGH</button>
+              <button class="chip" data-sev="med">MEDIUM</button>
+              <button class="chip" data-sev="low">LOW</button>
+            </div>
+            <span class="panel-sub" id="alerts-sub">정상 동작 중</span>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="alerts-table" id="alerts-table">
+            <thead>
+              <tr>
+                <th class="col-time">시각</th>
+                <th class="col-sev">심각도</th>
+                <th class="col-feat">지표</th>
+                <th class="col-z">Z-score</th>
+                <th class="col-val">현재 / 기준</th>
+                <th class="col-src">주요 출발지</th>
+              </tr>
+            </thead>
+            <tbody id="alerts-tbody">
+              <tr class="empty-row"><td colspan="6">아직 알림이 없습니다. 워밍업이 끝나면 이상치가 여기 표시됩니다.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Live network activity</h2>
+          <span class="panel-sub" id="live-sub">current window</span>
+        </div>
+        <div class="talkers">
+          <div class="talker-section">
+            <div class="talker-title">Top source IPs</div>
+            <div class="bars" id="bars-src"><div class="bar-empty">—</div></div>
+          </div>
+          <div class="talker-section">
+            <div class="talker-title">Top destination IPs</div>
+            <div class="bars" id="bars-dst"><div class="bar-empty">—</div></div>
+          </div>
+          <div class="talker-section">
+            <div class="talker-title">Top destination ports</div>
+            <div class="bars" id="bars-port"><div class="bar-empty">—</div></div>
+          </div>
+          <div class="talker-section">
+            <div class="talker-title">Protocol mix</div>
+            <div class="protomix" id="protomix"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>로컬 전용 · 1초 폴링 · 행 클릭으로 상세 펼치기</span>
+    <span id="warmup-note"></span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
