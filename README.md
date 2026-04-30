@@ -1,4 +1,4 @@
-# NIDS-Win — Network Anomaly Detector for Windows
+# NIDS-Win(네트워크 침입 탐지 시스템-윈도우용) — Network Anomaly Detector for Windows
 
 [![CI](https://github.com/Seok-Hyun-Ann/NIDS-Win/actions/workflows/ci.yml/badge.svg)](https://github.com/Seok-Hyun-Ann/NIDS-Win/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
