@@ -37,6 +37,21 @@ function severity(z) {
   if (a >= 4.5) return "med";
   return "low";
 }
+// Prefer the classifier's Korean severity (present on all new alerts); fall back
+// to the z-score band for older rows. Behavioural alerts have z=0 so this is the
+// only way to colour them correctly.
+function sevClass(a) {
+  switch (a.severity) {
+    case "심각": return "high";
+    case "경고": return "med";
+    case "주의": return "low";
+    case "관심": return "low";
+    default:     return severity(a.z_score);
+  }
+}
+function isBehavioral(a) {
+  return a.baseline_std === 0 && a.baseline_mean === 0;
+}
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -188,7 +203,7 @@ function renderHistogram(alerts) {
     if (now - t <= 3_600_000)  last1h  += 1;
     const idx = Math.floor((t - start) / HIST_BIN_MS);
     if (idx >= 0 && idx < HIST_BINS) {
-      const sev = severity(a.z_score);
+      const sev = sevClass(a);
       bins[idx].count += 1;
       const order = { low: 0, med: 1, high: 2 };
       if (bins[idx].maxSev === null || order[sev] > order[bins[idx].maxSev]) {
@@ -244,7 +259,7 @@ function renderAlerts(alerts) {
   const sub = el("alerts-sub");
   let shown = alerts;
   if (STATE.filterSev !== "all") {
-    shown = alerts.filter((a) => severity(a.z_score) === STATE.filterSev);
+    shown = alerts.filter((a) => sevClass(a) === STATE.filterSev);
   }
   if (shown.length === 0) {
     const empty = STATE.filterSev === "all"
@@ -258,21 +273,29 @@ function renderAlerts(alerts) {
   sub.textContent = `${shown.length} / 전체 ${alerts.length}건`;
   tbody.innerHTML = "";
   for (const a of shown) {
-    const sev = severity(a.z_score);
+    const sev = sevClass(a);
+    const behav = isBehavioral(a);
     const expanded = STATE.expanded.has(a.id);
     const tr = document.createElement("tr");
     tr.dataset.alertId = a.id;
-    const topSrc = Object.keys(a.context?.top_src_ips || {})[0] || "—";
+    const topSrc = behav
+      ? (a.context?.new_destination || "—")
+      : (Object.keys(a.context?.top_src_ips || {})[0] || "—");
+    const zCell = behav
+      ? "—"
+      : `${a.z_score >= 0 ? "+" : ""}${a.z_score.toFixed(2)}σ`;
+    const valCell = behav
+      ? fmt(a.value, 0)
+      : `${fmt(a.value, 1)} <span style="color:var(--text-faint)">/</span> ${fmt(a.baseline_mean, 1)} ±${fmt(a.baseline_std, 1)}`;
     tr.innerHTML = `
       <td class="col-time mono">${fmtTime(a.timestamp_ns)}</td>
-      <td class="col-sev"><span class="sev-badge ${sev}">${sev.toUpperCase()}</span></td>
-      <td class="col-feat">${escapeHtml(a.feature)}</td>
-      <td class="col-z mono ${a.z_score >= 0 ? "z-pos" : "z-neg"}">
-        ${a.z_score >= 0 ? "+" : ""}${a.z_score.toFixed(2)}σ
+      <td class="col-sev"><span class="sev-badge ${sev}">${escapeHtml(a.severity || sev.toUpperCase())}</span></td>
+      <td class="col-feat">
+        <div>${escapeHtml(a.category || a.feature)}</div>
+        <div class="mono" style="font-size:11px;color:var(--text-faint)">${escapeHtml(a.feature)}</div>
       </td>
-      <td class="col-val mono">
-        ${fmt(a.value, 1)} <span style="color:var(--text-faint)">/</span> ${fmt(a.baseline_mean, 1)} ±${fmt(a.baseline_std, 1)}
-      </td>
+      <td class="col-z mono ${a.z_score >= 0 ? "z-pos" : "z-neg"}">${zCell}</td>
+      <td class="col-val mono">${valCell}</td>
       <td class="col-src mono">${escapeHtml(topSrc)}</td>
     `;
     tr.addEventListener("click", () => toggleExpand(a.id));
@@ -315,8 +338,13 @@ function buildDetailRow(a, sev) {
     <td colspan="6">
       <div class="alert-detail sev-${sev}">
         <div class="detail-block full">
-          <div class="detail-title">근거</div>
-          <div class="detail-text">${escapeHtml(a.explanation)}</div>
+          <div class="detail-title">쉬운 설명</div>
+          <div class="detail-text">${escapeHtml(a.summary || a.explanation)}</div>
+          ${a.recommendation ? `<div class="detail-text" style="margin-top:6px;font-weight:600">→ 권장: ${escapeHtml(a.recommendation)}</div>` : ""}
+        </div>
+        <div class="detail-block full">
+          <div class="detail-title">기술 상세 (전문가용)</div>
+          <div class="detail-text" style="color:var(--text-dim)">${escapeHtml(a.explanation)}</div>
         </div>
         <div class="detail-block">
           <div class="detail-title">Top source IPs</div>

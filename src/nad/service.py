@@ -14,10 +14,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
+from .adaptive import AdaptiveDetector
+from .behavioral import FirstSeenDetector
 from .capture.factory import make_capture
 from .detect import Alert, BaselineDetector
 from .features import WindowAggregator, WindowFeatures
-from .storage import AlertStore
+from .storage import AlertStore, DestinationStore
 
 
 log = logging.getLogger(__name__)
@@ -35,19 +37,52 @@ class MonitorService:
         confirm_windows: int = 3,
         cooldown_windows: int = 10,
         history_size: int = 300,
+        detector_kind: str = "baseline",     # "baseline" | "adaptive"
+        bucketing: str = "weekend_hour",
+        threshold_mode: str = "combined",
+        target_rate: float = 0.005,
+        robust_k: float = 3.5,
+        bucket_warmup: int = 200,
+        behavioral: bool = True,
+        firstseen_learning: int = 3600,
+        firstseen_consecutive: int = 5,
     ) -> None:
         self.interface = interface
         self.bpf_filter = bpf_filter
         self.window_seconds = window_seconds
+        self.detector_kind = detector_kind
         self.aggregator = WindowAggregator(window_seconds=window_seconds)
-        self.detector = BaselineDetector(
-            z_threshold=z_threshold,
-            warmup_windows=warmup_windows,
-            confirm_windows=confirm_windows,
-            cooldown_windows=cooldown_windows,
-        )
+        if detector_kind == "adaptive":
+            self.detector = AdaptiveDetector(
+                bucketing=bucketing,
+                threshold_mode=threshold_mode,
+                target_rate=target_rate,
+                robust_k=robust_k,
+                warmup_windows=bucket_warmup,
+                global_warmup=warmup_windows,
+                confirm_windows=confirm_windows,
+                cooldown_windows=cooldown_windows,
+            )
+        else:
+            self.detector = BaselineDetector(
+                z_threshold=z_threshold,
+                warmup_windows=warmup_windows,
+                confirm_windows=confirm_windows,
+                cooldown_windows=cooldown_windows,
+            )
         self.store = AlertStore(db_path)
         self.history_size = history_size
+
+        # Behavioural axis (component A): never-before-seen external destinations.
+        self.dest_store: Optional[DestinationStore] = None
+        self.behavioral: Optional[FirstSeenDetector] = None
+        if behavioral:
+            self.dest_store = DestinationStore(db_path)
+            self.behavioral = FirstSeenDetector(
+                store=self.dest_store,
+                learning_windows=firstseen_learning,
+                min_consecutive=firstseen_consecutive,
+            )
 
         self._lock = threading.Lock()
         self._windows: deque[WindowFeatures] = deque(maxlen=history_size)
@@ -77,6 +112,8 @@ class MonitorService:
             self._thread.join(timeout=3.0)
             self._thread = None
         self.store.close()
+        if self.dest_store is not None:
+            self.dest_store.close()
 
     def _run(self) -> None:
         try:
@@ -97,7 +134,10 @@ class MonitorService:
     def _handle_window(self, window: WindowFeatures) -> None:
         with self._lock:
             self._windows.append(window)
-        for alert in self.detector.update(window):
+        alerts = list(self.detector.update(window))
+        if self.behavioral is not None:
+            alerts.extend(self.behavioral.update(window))
+        for alert in alerts:
             self.store.save_alert(alert)
             with self._lock:
                 self._recent_alerts.append(alert)
@@ -109,20 +149,23 @@ class MonitorService:
         with self._lock:
             uptime = (time.time() - self._started_at) if self._started_at else 0.0
             last_window = self._windows[-1] if self._windows else None
+            # For the adaptive detector, alerting begins once the fast global
+            # fallback is warm (global_warmup); per-bucket baselines sharpen later.
+            warmup_base = getattr(
+                self.detector, "global_warmup", self.detector.warmup_windows
+            )
             return {
                 "interface": self.interface,
                 "bpf_filter": self.bpf_filter,
                 "window_seconds": self.window_seconds,
+                "detector": self.detector_kind,
                 "uptime_s": uptime,
                 "packets_seen": self._packets_seen,
                 "windows_seen": len(self._windows),
                 "last_packet_at": self._last_packet_at,
                 "last_error": self._last_error,
                 "running": self._thread is not None and self._thread.is_alive(),
-                "warmup_remaining": max(
-                    0,
-                    self.detector.warmup_windows - (len(self._windows)),
-                ),
+                "warmup_remaining": max(0, warmup_base - len(self._windows)),
                 "current_window": _window_to_dict(last_window) if last_window else None,
                 "alert_total": self.store.total_alerts(),
             }
@@ -141,4 +184,5 @@ class MonitorService:
 
 def _window_to_dict(w: WindowFeatures) -> dict:
     d = asdict(w)
+    d.pop("all_dst_ips", None)   # full destination list is for the detector, not the UI
     return d
