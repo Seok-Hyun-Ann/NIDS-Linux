@@ -6,6 +6,7 @@ thread itself.
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -46,6 +47,7 @@ class MonitorService:
         behavioral: bool = True,
         firstseen_learning: int = 3600,
         firstseen_consecutive: int = 5,
+        baseline_save_interval: int = 300,
     ) -> None:
         self.interface = interface
         self.bpf_filter = bpf_filter
@@ -72,6 +74,18 @@ class MonitorService:
             )
         self.store = AlertStore(db_path)
         self.history_size = history_size
+
+        # Restore learned baselines so a restart doesn't discard days of learning.
+        self.baseline_save_interval = max(1, baseline_save_interval)
+        self._windows_since_save = 0
+        if hasattr(self.detector, "restore"):
+            raw = self.store.load_detector_state()
+            if raw:
+                try:
+                    if self.detector.restore(json.loads(raw)):
+                        log.info("restored detector baselines from store")
+                except (ValueError, TypeError):
+                    log.warning("could not parse saved detector state; cold start")
 
         # Behavioural axis (component A): never-before-seen external destinations.
         self.dest_store: Optional[DestinationStore] = None
@@ -111,6 +125,7 @@ class MonitorService:
         if self._thread is not None:
             self._thread.join(timeout=3.0)
             self._thread = None
+        self._save_detector_state()       # final flush so nothing is lost on exit
         self.store.close()
         if self.dest_store is not None:
             self.dest_store.close()
@@ -142,6 +157,20 @@ class MonitorService:
             with self._lock:
                 self._recent_alerts.append(alert)
             log.info("ALERT %s z=%.2f val=%.2f", alert.feature, alert.z_score, alert.value)
+
+        self._windows_since_save += 1
+        if self._windows_since_save >= self.baseline_save_interval:
+            self._windows_since_save = 0
+            self._save_detector_state()
+
+    def _save_detector_state(self) -> None:
+        if not hasattr(self.detector, "serialize"):
+            return
+        try:
+            self.store.save_detector_state(
+                json.dumps(self.detector.serialize()), time.time_ns())
+        except Exception:                                # noqa: BLE001
+            log.exception("failed to persist detector state")
 
     # ----- read paths used by the dashboard -----
 

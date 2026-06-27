@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS alerts (
     recommendation TEXT   NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(timestamp_ns DESC);
+CREATE TABLE IF NOT EXISTS detector_state (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    state_json  TEXT    NOT NULL,
+    updated_ns  INTEGER NOT NULL
+);
 """
 
 # Columns added after the initial release; ALTER-in for pre-existing databases.
@@ -109,6 +114,25 @@ class AlertStore:
         with self._lock:
             cur = self._conn.execute("SELECT COUNT(*) FROM alerts")
             return int(cur.fetchone()[0])
+
+    def save_detector_state(self, state_json: str, updated_ns: int) -> None:
+        """Persist the learned detector state so a restart doesn't lose days of
+        baseline learning. One row, upserted."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO detector_state (id, state_json, updated_ns) "
+                "VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+                "state_json=excluded.state_json, updated_ns=excluded.updated_ns",
+                (state_json, updated_ns),
+            )
+            self._conn.commit()
+
+    def load_detector_state(self) -> str | None:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT state_json FROM detector_state WHERE id = 1")
+            row = cur.fetchone()
+            return row[0] if row else None
 
     def close(self) -> None:
         with self._lock:

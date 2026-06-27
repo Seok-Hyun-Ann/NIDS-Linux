@@ -129,6 +129,48 @@ def test_cusum_quiet_on_stable_traffic():
     assert not [a for a in out if "완만한" in a.category]
 
 
+def test_serialize_restore_roundtrip_keeps_baselines_warm():
+    """A restored detector must keep its learned baselines — no re-warmup —
+    so a restart doesn't blind it for hours."""
+    import json
+    random.seed(20)
+    det = _det()
+    _feed(det, 80, pkts=100, hour=9, jitter=5)
+    snap = det.serialize()
+    json.dumps(snap)                       # must be JSON-serialisable
+
+    det2 = _det()
+    assert det2.restore(snap) is True
+    fired = []
+    for _ in range(3):                     # confirm_windows=3, already warm
+        fired += det2.update(_w(5000, hour=9))
+    assert any(a.feature == "packet_count" for a in fired)
+
+
+def test_restore_rejects_incompatible_bucketing():
+    random.seed(20)
+    det = _det(bucketing="hour")
+    _feed(det, 50, pkts=100, hour=9)
+    other = _det(bucketing="weekend_hour")
+    assert other.restore(det.serialize()) is False
+
+
+def test_cusum_reanchors_to_calm_after_spike_entry():
+    """Regression: re-entering a bucket whose first window is a spike must drop
+    the stale cross-day anchor and re-anchor to the next calm level — never to
+    the spike, and never carry yesterday's reference."""
+    random.seed(21)
+    det = _det(bucketing="hour", robust_k=4.0, warmup_windows=40,
+               cooldown_windows=0, cusum_h=6.0)
+    key = (10, "packet_count")
+    _feed(det, 60, pkts=100, hour=10, jitter=3)
+    det.update(_w(100, hour=11))           # leave bucket 10
+    det.update(_w(5000, hour=10))          # re-enter bucket 10 with a spike
+    assert key not in det._cusum_ref        # stale anchor dropped; spike not used
+    det.update(_w(100, hour=10))           # first calm window of the visit
+    assert abs(det._cusum_ref[key] - 100) < 30   # anchored to calm, not 5000
+
+
 def test_snapshot_is_json_serialisable():
     import json
     random.seed(5)

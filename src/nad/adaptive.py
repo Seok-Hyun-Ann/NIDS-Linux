@@ -187,6 +187,16 @@ class AdaptiveDetector:
                     # CUSUM tracks sub-threshold drift on the warm bucket's stream.
                     cu = (self._cusum_stat(bucket_key, name)
                           if self.cusum and not use_fallback else None)
+                    key = (bucket_key, name)
+                    if cu is not None and entering_bucket:
+                        # New visit to this bucket: drop the stale cross-day anchor
+                        # and reset — regardless of whether this window is a spike —
+                        # so anchoring happens on the first *calm* window (a spike at
+                        # the top of the hour never becomes the reference).
+                        self._cusum_ref.pop(key, None)
+                        self._cusum_refscale.pop(key, None)
+                        self._cusum_seed_n.pop(key, None)
+                        cu.reset()
                     if abs(z) >= threshold:
                         if cu is not None:
                             cu.reset()      # a real spike — handled by the instantaneous path
@@ -223,11 +233,11 @@ class AdaptiveDetector:
                     else:
                         self._streak[name] = 0
                         if cu is not None:
-                            key = (bucket_key, name)
-                            if entering_bucket or key not in self._cusum_ref:
-                                # Start a fresh anchor for this visit. A constant
-                                # day-to-day level shift then yields ~zero residual;
-                                # only real within-visit drift accumulates.
+                            if key not in self._cusum_ref:
+                                # First calm window of the visit anchors here, so the
+                                # reference reflects this visit's own normal level
+                                # (constant day-to-day shifts yield ~zero residual;
+                                # only real within-visit drift accumulates).
                                 self._cusum_ref[key] = value
                                 self._cusum_refscale[key] = 0.0
                                 self._cusum_seed_n[key] = 1
@@ -329,3 +339,49 @@ class AdaptiveDetector:
             },
             "buckets": buckets,
         }
+
+    # ----- persistence (survive restarts) -----
+
+    def serialize(self) -> dict:
+        """Full learned state for persistence: per-bucket and global baselines
+        (median/MAD/n) and the rate-cutoff quantile estimators. CUSUM, cooldown
+        and streak state are short-lived (per visit) and intentionally omitted —
+        they re-establish themselves within one bucket visit after a restart."""
+        def stat(s: RobustEwmaStat) -> dict:
+            return {"median": s.median, "mad": s.mad, "n": s.n}
+
+        def p2(q: P2Quantile) -> dict:
+            return {"count": q.count, "init": list(q._init), "q": list(q._q),
+                    "n": list(q._n), "np": list(q._np), "dn": list(q._dn)}
+
+        return {
+            "version": 1,
+            "bucketing": self.bucketing,
+            "buckets": {f"{bk}|{name}": stat(s)
+                        for (bk, name), s in self._buckets.items()},
+            "global": {name: stat(s) for name, s in self._global.items()},
+            "cutoff": {name: p2(q) for name, q in self._cutoff.items()},
+        }
+
+    def restore(self, data: dict) -> bool:
+        """Load state from :meth:`serialize`. Ignores incompatible snapshots
+        (different bucketing) and never raises — a bad snapshot just means a
+        cold start. Returns True if anything was restored."""
+        if not data or data.get("bucketing") != self.bucketing:
+            return False
+        try:
+            for k, d in data.get("buckets", {}).items():
+                bk_s, name = k.split("|", 1)
+                s = self._bucket_stat(int(bk_s), name)
+                s.median, s.mad, s.n, s._buf = d["median"], d["mad"], d["n"], None
+            for name, d in data.get("global", {}).items():
+                s = self._global_stat(name)
+                s.median, s.mad, s.n, s._buf = d["median"], d["mad"], d["n"], None
+            for name, d in data.get("cutoff", {}).items():
+                q = self._cutoff_q(name)
+                q.count = d["count"]
+                q._init, q._q = list(d["init"]), list(d["q"])
+                q._n, q._np, q._dn = list(d["n"]), list(d["np"]), list(d["dn"])
+        except (KeyError, ValueError, TypeError):
+            return False
+        return True
