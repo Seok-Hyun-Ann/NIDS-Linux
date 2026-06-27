@@ -61,17 +61,28 @@ class FirstSeenDetector:
         min_consecutive: int = 5,
         min_packets: int = 3,
         cooldown_windows: int = 30,
+        ttl_seconds: float = 30 * 86_400,  # forget a destination unseen for 30 days
+        max_known: int = 100_000,          # hard cap on remembered destinations
+        prune_interval: int = 3600,        # windows between TTL/cap sweeps
         allowlist: Iterable[str] | None = None,
         tz: tzinfo | None = None,
     ) -> None:
         self._store = store
-        self._known: set[str] = set(store.load()) if store else set()
+        self.max_known = max(1, max_known)
+        # ip -> last_seen_ns. Bounded by TTL + max_known so it can't grow forever.
+        self._known: dict[str, int] = (
+            {ip: last for ip, (_first, last, _c) in store.load(self.max_known).items()}
+            if store else {}
+        )
         self._watch: dict[str, int] = {}
         self._cooldown: dict[str, int] = {}
+        self._seen_since_prune: set[str] = set()
         self.learning_windows = learning_windows
         self.min_consecutive = max(1, min_consecutive)
         self.min_packets = max(1, min_packets)
         self.cooldown_windows = cooldown_windows
+        self.ttl_ns = int(ttl_seconds * 1_000_000_000)
+        self.prune_interval = max(1, prune_interval)
         self.allowlist = set(allowlist or ())
         self.tz = tz
         self._windows_seen = 0
@@ -97,15 +108,17 @@ class FirstSeenDetector:
 
         for ip, cnt in externals.items():
             if ip in self._known:
+                self._known[ip] = ts                 # refresh recency for TTL
+                self._seen_since_prune.add(ip)
                 continue
             if learning:
-                self._known.add(ip)
+                self._known[ip] = ts
                 learn.append(ip)
                 continue
             self._watch[ip] = self._watch.get(ip, 0) + 1
             if self._watch[ip] >= self.min_consecutive and ip not in self._cooldown:
                 alerts.append(self._build_alert(ip, cnt, self._watch[ip], window))
-                self._known.add(ip)
+                self._known[ip] = ts
                 learn.append(ip)
                 self._cooldown[ip] = self.cooldown_windows
                 self._watch.pop(ip, None)
@@ -113,13 +126,38 @@ class FirstSeenDetector:
         # Watched candidates that disappeared were transient — learn and forget.
         for ip in list(self._watch):
             if ip not in current:
-                self._known.add(ip)
+                self._known[ip] = ts
                 learn.append(ip)
                 self._watch.pop(ip, None)
 
         if self._store and learn:
             self._store.upsert_many(learn, ts)
+        if self._windows_seen % self.prune_interval == 0:
+            self._prune(ts)
         return alerts
+
+    def _prune(self, now_ns: int) -> None:
+        """Bound memory and the DB: refresh recency of recently-seen IPs, then
+        forget anything past its TTL, then enforce the hard cap (drop oldest)."""
+        if self._store and self._seen_since_prune:
+            self._store.touch_many(list(self._seen_since_prune), now_ns)
+        self._seen_since_prune.clear()
+
+        cutoff = now_ns - self.ttl_ns
+        expired = [ip for ip, last in self._known.items() if last < cutoff]
+        for ip in expired:
+            del self._known[ip]
+        if self._store:
+            self._store.prune(cutoff)
+
+        if len(self._known) > self.max_known:
+            # LRU backstop: keep the most-recently-seen max_known.
+            ordered = sorted(self._known.items(), key=lambda kv: kv[1], reverse=True)
+            drop = [ip for ip, _ in ordered[self.max_known:]]
+            for ip in drop:
+                del self._known[ip]
+            if self._store:
+                self._store.delete_many(drop)
 
     def _build_alert(self, ip: str, pkts: int, consecutive: int,
                      window: WindowFeatures) -> Alert:

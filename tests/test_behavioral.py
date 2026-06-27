@@ -11,9 +11,12 @@ from nad.storage import DestinationStore
 _TS = int(datetime(2026, 6, 1, 12, tzinfo=timezone.utc).timestamp() * 1e9)
 
 
-def _w(dsts: dict[str, int]) -> WindowFeatures:
+_NS = 1_000_000_000
+
+
+def _w(dsts: dict[str, int], ts: int = _TS) -> WindowFeatures:
     return WindowFeatures(
-        window_start_ns=_TS, window_end_ns=_TS, duration_s=1.0,
+        window_start_ns=ts, window_end_ns=ts, duration_s=1.0,
         packet_count=sum(dsts.values()), bytes_total=0, avg_payload_size=0.0,
         unique_src_ips=1, unique_dst_ips=len(dsts), unique_dst_ports=1,
         tcp_count=0, udp_count=0, icmp_count=0, other_count=0,
@@ -72,6 +75,51 @@ def test_min_packets_filters_stray_single_packet():
     det = FirstSeenDetector(store=None, learning_windows=0,
                             min_consecutive=1, min_packets=3)
     assert det.update(_w({"8.8.8.8": 1})) == []   # below min_packets
+
+
+def test_ttl_forgets_stale_destinations():
+    det = FirstSeenDetector(store=None, learning_windows=1, min_consecutive=1,
+                            min_packets=1, ttl_seconds=10, prune_interval=1)
+    det.update(_w({"8.8.8.8": 5}, ts=_TS))                  # learned
+    assert "8.8.8.8" in det._known
+    det.update(_w({"9.9.9.9": 5}, ts=_TS + 20 * _NS))       # +20s > ttl → prune
+    assert "8.8.8.8" not in det._known                      # forgotten
+    assert "9.9.9.9" in det._known
+
+
+def test_recency_refresh_keeps_active_destination():
+    det = FirstSeenDetector(store=None, learning_windows=1, min_consecutive=1,
+                            min_packets=1, ttl_seconds=10, prune_interval=1)
+    det.update(_w({"8.8.8.8": 5}, ts=_TS))
+    det.update(_w({"8.8.8.8": 5}, ts=_TS + 8 * _NS))        # seen again within ttl
+    det.update(_w({"8.8.8.8": 5}, ts=_TS + 15 * _NS))       # still within ttl of last seen
+    assert "8.8.8.8" in det._known
+
+
+def test_max_known_cap_evicts_oldest():
+    det = FirstSeenDetector(store=None, learning_windows=100, min_consecutive=1,
+                            min_packets=1, ttl_seconds=10**12, max_known=2,
+                            prune_interval=1)
+    det.update(_w({"8.8.8.8": 5}, ts=_TS))
+    det.update(_w({"1.1.1.1": 5}, ts=_TS + _NS))
+    det.update(_w({"9.9.9.9": 5}, ts=_TS + 2 * _NS))        # 3rd → cap 2 → drop oldest
+    assert len(det._known) == 2
+    assert "8.8.8.8" not in det._known and "9.9.9.9" in det._known
+
+
+def test_store_prune_and_load_limit():
+    path = os.path.join(tempfile.gettempdir(), "nad_dest_prune.db")
+    if os.path.exists(path):
+        os.remove(path)
+    s = DestinationStore(path)
+    s.upsert_many(["1.1.1.1", "2.2.2.2"], _TS)
+    s.touch_many(["2.2.2.2"], _TS + 100 * _NS)             # 2.2.2.2 is newer
+    dropped = s.prune(_TS + 50 * _NS)                       # drops the stale 1.1.1.1
+    assert dropped == ["1.1.1.1"]
+    assert set(s.load()) == {"2.2.2.2"}
+    assert set(s.load(limit=1)) == {"2.2.2.2"}             # newest-first
+    s.close()
+    os.remove(path)
 
 
 def test_destination_store_persists_across_reopen():
