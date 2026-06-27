@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from .adaptive import AdaptiveDetector
-from .behavioral import FirstSeenDetector
+from .behavioral import BeaconDetector, FirstSeenDetector
 from .capture.factory import make_capture
 from .detect import Alert, BaselineDetector
 from .features import WindowAggregator, WindowFeatures
@@ -87,9 +87,10 @@ class MonitorService:
                 except (ValueError, TypeError):
                     log.warning("could not parse saved detector state; cold start")
 
-        # Behavioural axis (component A): never-before-seen external destinations.
+        # Behavioural axis: never-before-seen destinations (A) + periodic beacons (C).
         self.dest_store: Optional[DestinationStore] = None
         self.behavioral: Optional[FirstSeenDetector] = None
+        self.beacon: Optional[BeaconDetector] = None
         if behavioral:
             self.dest_store = DestinationStore(db_path)
             self.behavioral = FirstSeenDetector(
@@ -97,6 +98,7 @@ class MonitorService:
                 learning_windows=firstseen_learning,
                 min_consecutive=firstseen_consecutive,
             )
+            self.beacon = BeaconDetector()
 
         self._lock = threading.Lock()
         self._windows: deque[WindowFeatures] = deque(maxlen=history_size)
@@ -152,6 +154,8 @@ class MonitorService:
         alerts = list(self.detector.update(window))
         if self.behavioral is not None:
             alerts.extend(self.behavioral.update(window))
+        if self.beacon is not None:
+            alerts.extend(self.beacon.update(window))
         for alert in alerts:
             self.store.save_alert(alert)
             with self._lock:

@@ -44,6 +44,8 @@ Two complementary axes, so an attack that hides from one is caught by the other:
 | Burst-then-hide (masking) | median/MAD scale isn't inflated by the burst | robust statistics |
 | Volume-normal but structurally off (one-directional exfil, fan-out) | shape features scored directly | `egress_ratio`, `fan_out` |
 | Never-before-seen external server (quiet C2 / exfil) | persistent identity memory | `FirstSeenDetector` |
+| Vertical port scan (many ports, one host) | per-destination port tracking | `max_ports_per_dst` |
+| Periodic C2 beacon (small, regular timing) | inter-contact interval regularity | `BeaconDetector` |
 | Off-hours activity | the hour has its own baseline | time-of-day buckets |
 
 ## What you see
@@ -169,9 +171,10 @@ python scripts/eval_unsw.py
 
 For each 1-second window the aggregator computes 9 volume/count features (packet
 count, byte total, average payload size, unique source/destination IPs, unique
-destination ports, TCP/UDP/ICMP counts) plus 2 **shape** features —
-`egress_ratio` (% of bytes outbound) and `fan_out` (destinations per source) —
-and the top-K talkers for context.
+destination ports, TCP/UDP/ICMP counts) plus 3 **shape** features —
+`egress_ratio` (% of bytes outbound), `fan_out` (destinations per source), and
+`max_ports_per_dst` (most ports hit on a single host, which exposes a vertical
+scan even against busy background) — and the top-K talkers for context.
 
 The **adaptive detector** keeps a robust **EWMA median + MAD** per `(time-bucket,
 feature)`; outliers barely move it, so a burst can't blind the next detection.
@@ -181,9 +184,12 @@ re-anchored on entering each bucket and scaled by the within-visit spread,
 accumulates sustained sub-threshold drift (low-and-slow) without firing on normal
 day-to-day regime shifts. Cold buckets fall back to a fast global baseline.
 
-The **first-seen detector** remembers every external destination the host has
-contacted (persisted in SQLite, survives restarts) and flags sustained traffic to
-a brand-new public server — the tell of quiet exfiltration or C2.
+The **behavioral axis** runs alongside: a **first-seen detector** remembers every
+external destination the host has contacted (persisted in SQLite, survives
+restarts, bounded by TTL + an LRU cap) and flags sustained traffic to a brand-new
+public server; a **beacon detector** flags periodic, low-jitter contact to a
+destination — the timing signature of a C2 channel that stays too small for any
+volume threshold.
 
 Finally, a transparent **classifier** maps the deviating feature plus context
 (direction, protocol mix, time, top talkers) to a named hypothesis, a severity
@@ -285,8 +291,8 @@ tests/
 - [x] First-seen-destination behavioral axis
 - [x] Shape features + plain-language classifier
 - [x] PCAP replay mode for repeatable testing
-- [ ] Beacon (periodicity) detection for C2 channels
-- [ ] Per-host scan features (scans against busy backgrounds)
+- [x] Beacon (periodicity) detection for C2 channels
+- [x] Per-host scan features (vertical scans against busy backgrounds)
 - [ ] Windows Service installer; optional auth / TLS for remote dashboard
 
 ## Privacy

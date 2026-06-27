@@ -4,7 +4,9 @@ import os
 import tempfile
 from datetime import datetime, timezone
 
-from nad.behavioral import FirstSeenDetector, is_external
+import random
+
+from nad.behavioral import BeaconDetector, FirstSeenDetector, is_external
 from nad.features import WindowFeatures
 from nad.storage import DestinationStore
 
@@ -120,6 +122,46 @@ def test_store_prune_and_load_limit():
     assert set(s.load(limit=1)) == {"2.2.2.2"}             # newest-first
     s.close()
     os.remove(path)
+
+
+def test_beacon_detects_regular_interval():
+    det = BeaconDetector(min_events=6, max_cv=0.2, min_period_s=30,
+                         max_period_s=600, cooldown_windows=0)
+    fired = []
+    for i in range(8):                                   # contact every 60s
+        fired += det.update(_w({"8.8.8.8": 3}, ts=_TS + i * 60 * _NS))
+    assert any(a.category.startswith("주기적 통신") for a in fired)
+    assert fired[-1].context["destination"] == "8.8.8.8"
+
+
+def test_beacon_ignores_irregular_timing():
+    det = BeaconDetector(min_events=6, max_cv=0.2, min_period_s=2,
+                         max_period_s=600, cooldown_windows=0)
+    random.seed(0)
+    out, t = [], _TS
+    for _ in range(14):                                  # jittery intervals 10–50s
+        t += int((10 + random.uniform(0, 40)) * _NS)
+        out += det.update(_w({"8.8.8.8": 3}, ts=t))
+    assert not [a for a in out if a.category.startswith("주기적")]
+
+
+def test_beacon_ignores_continuous_traffic():
+    det = BeaconDetector(min_events=6, max_cv=0.5, min_period_s=30,
+                         max_period_s=600, cooldown_windows=0)
+    out = []
+    for i in range(20):                                  # every 1s = continuous
+        out += det.update(_w({"8.8.8.8": 3}, ts=_TS + i * _NS))
+    assert not [a for a in out if a.category.startswith("주기적")]
+
+
+def test_beacon_ignores_internal_and_allowlisted():
+    det = BeaconDetector(min_events=4, max_cv=0.3, min_period_s=30,
+                         max_period_s=600, cooldown_windows=0,
+                         allowlist={"8.8.8.8"})
+    out = []
+    for i in range(8):
+        out += det.update(_w({"192.168.0.9": 3, "8.8.8.8": 3}, ts=_TS + i * 60 * _NS))
+    assert not out                                       # internal + allowlisted only
 
 
 def test_destination_store_persists_across_reopen():

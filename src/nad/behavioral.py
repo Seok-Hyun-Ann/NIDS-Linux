@@ -17,6 +17,7 @@ beacon detection are separate, later components.
 from __future__ import annotations
 
 import ipaddress
+from collections import deque
 from datetime import datetime, tzinfo
 from typing import Iterable, Optional
 
@@ -201,3 +202,119 @@ class FirstSeenDetector:
             "windows_seen": self._windows_seen,
             "learning": self._windows_seen <= self.learning_windows,
         }
+
+
+class BeaconDetector:
+    """Flag periodic, low-jitter communication to an external destination — the
+    timing signature of a C2 beacon, which stays small enough to slip under any
+    volume threshold.
+
+    For each external destination it records the timestamps of the windows it was
+    active in. Once a destination has at least ``min_events`` contacts whose
+    inter-contact intervals are tight (coefficient of variation ``<= max_cv``)
+    and whose period sits between ``min_period_s`` and ``max_period_s``, it
+    raises one alert, then mutes that destination for ``cooldown_windows``.
+
+    Conservative by design — legitimately periodic traffic (NTP, keepalives,
+    polling) can look beaconish, so use the allowlist and tight thresholds.
+    """
+
+    def __init__(
+        self,
+        min_events: int = 8,
+        max_cv: float = 0.15,
+        min_period_s: float = 10.0,
+        max_period_s: float = 3600.0,
+        history: int = 24,
+        cooldown_windows: int = 600,
+        max_tracked: int = 2000,
+        allowlist: Iterable[str] | None = None,
+        tz: tzinfo | None = None,
+    ) -> None:
+        self.min_events = max(3, min_events)
+        self.max_cv = max_cv
+        self.min_period_ns = min_period_s * 1e9
+        self.max_period_ns = max_period_s * 1e9
+        self.history = max(self.min_events, history)
+        self.cooldown_windows = cooldown_windows
+        self.max_tracked = max(1, max_tracked)
+        self.allowlist = set(allowlist or ())
+        self.tz = tz
+        self._hist: dict[str, deque[int]] = {}
+        self._seen_count: dict[str, int] = {}   # for LRU eviction
+        self._cooldown: dict[str, int] = {}
+        self._windows_seen = 0
+
+    def update(self, window: WindowFeatures) -> list[Alert]:
+        self._windows_seen += 1
+        ts = window.window_end_ns
+        for ip in list(self._cooldown):
+            self._cooldown[ip] -= 1
+            if self._cooldown[ip] <= 0:
+                del self._cooldown[ip]
+
+        alerts: list[Alert] = []
+        for ip in window.all_dst_ips:
+            if ip in self.allowlist or not is_external(ip):
+                continue
+            dq = self._hist.get(ip)
+            if dq is None:
+                dq = self._hist[ip] = deque(maxlen=self.history)
+            if not dq or dq[-1] != ts:
+                dq.append(ts)
+            self._seen_count[ip] = self._windows_seen
+
+            if len(dq) >= self.min_events and ip not in self._cooldown:
+                hit = self._evaluate(ip, dq, window)
+                if hit is not None:
+                    alerts.append(hit)
+                    self._cooldown[ip] = self.cooldown_windows
+
+        if len(self._hist) > self.max_tracked:
+            self._evict()
+        return alerts
+
+    def _evaluate(self, ip: str, dq: "deque[int]", window: WindowFeatures):
+        intervals = [dq[i + 1] - dq[i] for i in range(len(dq) - 1)]
+        mean = sum(intervals) / len(intervals)
+        if mean <= 0 or not (self.min_period_ns <= mean <= self.max_period_ns):
+            return None   # too frequent (continuous) or too sparse to be a beacon
+        var = sum((x - mean) ** 2 for x in intervals) / len(intervals)
+        cv = (var ** 0.5) / mean
+        if cv > self.max_cv:
+            return None   # irregular timing — not a beacon
+        period_s = mean / 1e9
+        summary = (
+            f"외부 서버({ip})와 약 {period_s:.0f}초 간격으로 매우 규칙적인 통신이 "
+            f"{len(dq)}회 반복됐습니다(간격 편차 거의 없음). 자동 업데이트·동기화일 "
+            f"수도 있지만, 악성코드가 주기적으로 신호를 보내는 C2 비콘일 수 있습니다."
+        )
+        return Alert(
+            timestamp_ns=window.window_end_ns,
+            feature="beacon",
+            value=float(len(dq)),
+            baseline_mean=0.0,
+            baseline_std=0.0,         # 0/0 marks a non-statistical (behavioural) alert
+            z_score=0.0,
+            direction="above",
+            explanation=(f"periodic contact to {ip}: period~{period_s:.1f}s, "
+                         f"cv={cv:.3f}, events={len(dq)}"),
+            context={"destination": ip, "period_seconds": period_s,
+                     "interval_cv": cv, "events": len(dq),
+                     "window_start_ns": window.window_start_ns},
+            category="주기적 통신(비콘) 의심",
+            severity="경고",
+            summary=summary,
+            recommendation="이 주소로 주기적으로 통신할 이유가 없다면 차단하고 점검하세요.",
+        )
+
+    def _evict(self) -> None:
+        # Drop the least-recently-active destinations down to the cap.
+        ordered = sorted(self._seen_count.items(), key=lambda kv: kv[1])
+        for ip, _ in ordered[: len(self._hist) - self.max_tracked]:
+            self._hist.pop(ip, None)
+            self._seen_count.pop(ip, None)
+
+    def state_snapshot(self) -> dict:
+        return {"tracked_destinations": len(self._hist),
+                "windows_seen": self._windows_seen}
