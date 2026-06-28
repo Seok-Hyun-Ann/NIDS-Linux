@@ -81,11 +81,13 @@ collapsible technical-detail section:
 | Baseline detector (EWMA + Z-score, N-window confirm) | ✅ |
 | Adaptive detector (per-time-bucket robust baselines + self-tuning threshold) | ✅ |
 | CUSUM low-and-slow drift detection | ✅ |
-| First-seen external-destination detection (persistent memory) | ✅ |
+| Per-host vertical scan feature (`max_ports_per_dst`) | ✅ |
+| First-seen external-destination detection (persistent, TTL/LRU-bounded) | ✅ |
+| Beacon (periodicity) detection for C2 | ✅ |
 | Plain-language alert classifier (category / severity / recommendation) | ✅ |
-| SQLite alert storage | ✅ |
+| Baseline persistence across restarts (no re-warmup) | ✅ |
+| SQLite alert storage (WAL) | ✅ |
 | FastAPI live dashboard | ✅ |
-| Beacon (periodicity) detection for C2 | ⏳ planned |
 | Windows Service installer | ⏳ planned |
 
 ## Requirements
@@ -129,7 +131,8 @@ nad serve --interface "\Device\NPF_{A5CB34C2-...}" --detector adaptive
 ```
 
 The first ~30 seconds are a warmup. Leave it running for hours/days so the
-per-hour baselines settle and detection sharpens.
+per-hour baselines settle and detection sharpens — the learned baselines are
+persisted, so stopping and restarting does **not** reset that learning.
 
 > **Tip — finding your interface:** the `\Device\NPF_{...}` strings are GUIDs.
 > Match them against `Get-NetAdapter | Select Name, InterfaceGuid` in PowerShell.
@@ -191,9 +194,13 @@ public server; a **beacon detector** flags periodic, low-jitter contact to a
 destination — the timing signature of a C2 channel that stays too small for any
 volume threshold.
 
-Finally, a transparent **classifier** maps the deviating feature plus context
-(direction, protocol mix, time, top talkers) to a named hypothesis, a severity
+A transparent **classifier** maps the deviating feature plus context (direction,
+protocol mix, time, top talkers) to a named hypothesis, a severity
 (관심 / 주의 / 경고 / 심각), an everyday-Korean summary, and a recommended action.
+
+Finally, the learned state — every per-bucket and global baseline plus the
+rate-cutoff estimators — is **persisted to SQLite and restored on start**, so a
+restart of a tool meant to learn over days never throws that learning away.
 
 ## CLI reference
 
