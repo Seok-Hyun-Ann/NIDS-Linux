@@ -8,9 +8,6 @@
 > A host-resident network anomaly detector for Linux that learns what *your*
 > machine's traffic looks like **at each time of day**, flags deviations, and
 > explains every alert in plain language.
->
-> Linux port of [NIDS-Win](https://github.com/Seok-Hyun-Ann/NIDS-Win) — same
-> detection engine, capture rewritten on top of `libpcap.so`.
 
 It captures live traffic on a chosen interface, builds a self-tuning baseline,
 and raises alerts with both an everyday-Korean verdict and the exact statistics
@@ -25,8 +22,27 @@ in the detection path. Pure standard-library statistics.
 - **Explained twice** — a plain-language verdict for anyone, the raw stats for analysts.
 - **On-device & inspectable** — the whole detection path is readable Python.
 
+## Platform support
+
+This is the Linux port of [NIDS-Win](https://github.com/Seok-Hyun-Ann/NIDS-Win):
+the detection engine is identical (it is OS-independent, pure-stdlib Python);
+only the packet-capture layer is per-OS. The capture factory
+(`src/nad/capture/factory.py`) detects the running OS and loads the matching
+backend — the other backend's code is never imported.
+
+| OS | Capture backend | Status | Instructions |
+|---|---|---|---|
+| **Linux** | `libpcap.so` via ctypes (`linux_libpcap.py`) | **primary target of this repo** | this README |
+| Windows 10/11 | Npcap `wpcap.dll` via ctypes (`windows_npcap.py`) | retained, works unchanged | [NIDS-Win README](https://github.com/Seok-Hyun-Ann/NIDS-Win#readme) |
+| macOS / BSD | — | not implemented | — |
+
+So this one codebase runs on both OSes; if you are on Windows, follow the
+NIDS-Win install steps (Npcap, Administrator terminal) — everything else,
+including the dashboard and all `nad serve` options, is the same.
+
 ## Contents
 
+- [Platform support](#platform-support)
 - [Why NIDS-Linux?](#why-nids-linux)
 - [What it detects](#what-it-detects)
 - [Getting started](#getting-started)
