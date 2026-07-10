@@ -273,6 +273,21 @@ python scripts/eval_unsw.py             # unsupervised separability on UNSW-NB15
 > Datasets and pcaps are **not** in the repo (too large, gitignored). Pcaps are
 > read via `dpkt`; UNSW-NB15 / CIC-IoT-2023 CSVs go in `Data/`.
 
+**Live end-to-end benchmark** — `evaluate.py` scores detectors on *synthetic*
+windows; this one drives real attack packets through the actual libpcap capture
+path and measures what gets detected. It is **loopback-locked**: every attack
+targets `127.0.0.1` and dedicated high ports this process opens itself, so
+nothing leaves the machine and no other service is touched (no more dangerous
+than `nmap localhost`). Needs root, only to capture on `lo`:
+
+```bash
+sudo .venv/bin/python scripts/live_attack_eval.py
+```
+
+It runs a benign baseline, then injects a port scan, a SYN/RST burst, and a
+volume spike, and prints per-attack detection, latency, and the post-warmup
+false-alarm count. A typical run detects 3/3 with 0 false alarms.
+
 **Project layout**
 
 ```
@@ -289,7 +304,8 @@ src/nad/
 ├── service.py    # capture → features → detect(+behavioural) → store loop
 ├── web/          # FastAPI app + dashboard
 └── cli.py        # `nad` console script
-scripts/          # evaluate.py, replay_pcap.py, eval_unsw.py
+scripts/          # evaluate.py (synthetic), live_attack_eval.py (loopback e2e),
+                  #   replay_pcap.py, eval_unsw.py
 docs/             # adaptive-detection-design.md
 tests/
 ```
