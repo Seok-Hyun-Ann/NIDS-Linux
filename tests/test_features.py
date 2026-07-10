@@ -4,10 +4,12 @@ from nad.capture.base import Direction, Packet
 from nad.features import WindowAggregator
 
 
-def _pkt(ts_ns: int, src="10.0.0.1", dst="10.0.0.2", sp=1234, dp=80, proto=6, plen=64, total=120):
+def _pkt(ts_ns: int, src="10.0.0.1", dst="10.0.0.2", sp=1234, dp=80, proto=6,
+         plen=64, total=120, tcp_flags=0):
     return Packet(
         timestamp_ns=ts_ns, src_ip=src, dst_ip=dst, src_port=sp, dst_port=dp,
-        protocol=proto, direction=Direction.UNKNOWN, payload=b"\x00" * plen, total_len=total,
+        protocol=proto, direction=Direction.UNKNOWN, payload=b"\x00" * plen,
+        total_len=total, tcp_flags=tcp_flags,
     )
 
 
@@ -91,3 +93,32 @@ def test_protocol_buckets():
 def test_flush_returns_none_on_empty():
     agg = WindowAggregator(window_seconds=1.0)
     assert agg.flush() is None
+
+
+# TCP flag bits: SYN=0x02, RST=0x04, FIN=0x01
+def test_tcp_flags_counted():
+    agg = WindowAggregator(window_seconds=1.0)
+    base = 7_000_000_000
+    agg.add(_pkt(base, tcp_flags=0x02))            # SYN (scan/connect attempt)
+    agg.add(_pkt(base, tcp_flags=0x02 | 0x10))     # SYN+ACK
+    agg.add(_pkt(base, tcp_flags=0x04))            # RST
+    agg.add(_pkt(base, tcp_flags=0x01 | 0x10))     # FIN+ACK
+    agg.add(_pkt(base, proto=17, tcp_flags=0))     # UDP — must not count
+    out = agg.flush()
+    assert out is not None
+    assert out.syn_count == 2
+    assert out.rst_count == 1
+    assert out.fin_count == 1
+    n = out.numeric()
+    assert n["syn_count"] == 2.0
+    assert n["rst_count"] == 1.0
+
+
+def test_tcp_flags_default_zero_when_absent():
+    agg = WindowAggregator(window_seconds=1.0)
+    base = 8_000_000_000
+    agg.add(_pkt(base))                            # no flags passed
+    out = agg.flush()
+    assert out is not None
+    assert out.syn_count == 0
+    assert out.rst_count == 0

@@ -11,6 +11,7 @@ from nad.capture.linux_libpcap import (
     _decode_sll2,
     _direction_from_pkttype,
 )
+from nad.capture.netlocal import infer_direction, local_ipv4s
 
 
 def _ip_bytes() -> bytes:
@@ -128,3 +129,30 @@ def test_decode_truncated_frames_return_none():
     assert _decode_sll2(b"\x08\x00") is None
     assert _decode_null(b"\x02") is None
     assert _decode_raw(b"\x45") is None
+
+
+LOCAL = {"10.0.0.1", "127.0.0.1"}
+
+
+def test_infer_direction_egress():
+    assert infer_direction("10.0.0.1", "8.8.8.8", LOCAL) is Direction.EGRESS
+
+
+def test_infer_direction_ingress():
+    assert infer_direction("8.8.8.8", "10.0.0.1", LOCAL) is Direction.INGRESS
+
+
+def test_infer_direction_loopback_is_unknown():
+    # both ends local (loopback) — direction is meaningless, stays neutral
+    assert infer_direction("127.0.0.1", "10.0.0.1", LOCAL) is Direction.UNKNOWN
+
+
+def test_infer_direction_transit_is_unknown():
+    # neither end local (promiscuous bystander) — no direction
+    assert infer_direction("8.8.8.8", "1.1.1.1", LOCAL) is Direction.UNKNOWN
+
+
+def test_local_ipv4s_includes_loopback_and_is_nonempty():
+    ips = local_ipv4s()
+    assert "127.0.0.1" in ips
+    assert all(isinstance(ip, str) for ip in ips)

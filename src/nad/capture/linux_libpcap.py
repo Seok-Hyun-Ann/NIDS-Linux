@@ -30,6 +30,7 @@ from ctypes import (
 )
 
 from .base import Capture, Direction, Packet
+from .netlocal import infer_direction, local_ipv4s
 
 
 PCAP_ERRBUF_SIZE = 256
@@ -267,6 +268,7 @@ class LinuxLibpcapCapture(Capture):
         self.bpf_filter = bpf_filter
         self._handle: int | None = None
         self._decode = None
+        self._local_ips: set[str] = set()
         self._stop = False
 
     def __enter__(self) -> "LinuxLibpcapCapture":
@@ -286,6 +288,11 @@ class LinuxLibpcapCapture(Capture):
                 "(capture needs root, or CAP_NET_RAW on the Python binary)"
             )
         self._handle = handle
+
+        # Snapshot our own addresses once, to infer direction on link types that
+        # carry no kernel tag (Ethernet/raw/loopback). Cooked SLL/SLL2 already
+        # report direction, so their decoders return it and we leave it alone.
+        self._local_ips = local_ipv4s()
 
         dlt = lib.pcap_datalink(handle)
         self._decode = _DECODERS.get(dlt)
@@ -346,21 +353,30 @@ class LinuxLibpcapCapture(Capture):
                 continue
             ip, direction = decoded
 
+            src_ip = socket.inet_ntoa(ip.src)
+            dst_ip = socket.inet_ntoa(ip.dst)
+            if direction == Direction.UNKNOWN:
+                direction = infer_direction(src_ip, dst_ip, self._local_ips)
+
             src_port = dst_port = 0
+            tcp_flags = 0
             payload = b""
             if isinstance(ip.data, (dpkt.tcp.TCP, dpkt.udp.UDP)):
                 src_port = int(ip.data.sport)
                 dst_port = int(ip.data.dport)
                 payload = bytes(ip.data.data)[:_PAYLOAD_CAP]
+                if isinstance(ip.data, dpkt.tcp.TCP):
+                    tcp_flags = int(ip.data.flags)
 
             yield Packet(
                 timestamp_ns=ts_ns,
-                src_ip=socket.inet_ntoa(ip.src),
-                dst_ip=socket.inet_ntoa(ip.dst),
+                src_ip=src_ip,
+                dst_ip=dst_ip,
                 src_port=src_port,
                 dst_port=dst_port,
                 protocol=int(ip.p),
                 direction=direction,
                 payload=payload,
                 total_len=int(ip.len),
+                tcp_flags=tcp_flags,
             )

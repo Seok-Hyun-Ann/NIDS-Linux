@@ -223,11 +223,14 @@ class WindowsNpcapCapture(Capture):
                 continue
 
             src_port = dst_port = 0
+            tcp_flags = 0
             payload = b""
             if isinstance(ip.data, (dpkt.tcp.TCP, dpkt.udp.UDP)):
                 src_port = int(ip.data.sport)
                 dst_port = int(ip.data.dport)
                 payload = bytes(ip.data.data)[:_PAYLOAD_CAP]
+                if isinstance(ip.data, dpkt.tcp.TCP):
+                    tcp_flags = int(ip.data.flags)
 
             yield Packet(
                 timestamp_ns=ts_ns,
@@ -239,4 +242,5 @@ class WindowsNpcapCapture(Capture):
                 direction=Direction.UNKNOWN,
                 payload=payload,
                 total_len=int(ip.len),
+                tcp_flags=tcp_flags,
             )

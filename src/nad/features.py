@@ -12,6 +12,11 @@ from typing import Optional
 
 from .capture.base import Direction, Packet
 
+# TCP flag bits (RFC 793), decoded from Packet.tcp_flags without importing dpkt.
+_TH_FIN = 0x01
+_TH_SYN = 0x02
+_TH_RST = 0x04
+
 
 @dataclass(slots=True)
 class WindowFeatures:
@@ -28,6 +33,11 @@ class WindowFeatures:
     udp_count: int
     icmp_count: int
     other_count: int
+    # TCP flag tallies — a SYN scan or SYN flood spikes syn_count against a low
+    # data-carrying baseline; RST bursts flag scan rejections / reset attacks.
+    syn_count: int = 0
+    rst_count: int = 0
+    fin_count: int = 0
     top_src_ips: dict[str, int] = field(default_factory=dict)
     top_dst_ips: dict[str, int] = field(default_factory=dict)
     top_dst_ports: dict[int, int] = field(default_factory=dict)
@@ -69,6 +79,8 @@ class WindowFeatures:
             "tcp_count": float(self.tcp_count),
             "udp_count": float(self.udp_count),
             "icmp_count": float(self.icmp_count),
+            "syn_count": float(self.syn_count),
+            "rst_count": float(self.rst_count),
             "egress_ratio": egress_ratio,
             "fan_out": float(fan_out),
             "max_ports_per_dst": float(self.max_ports_per_dst),
@@ -99,6 +111,9 @@ class WindowAggregator:
         self._udp = 0
         self._icmp = 0
         self._other = 0
+        self._syn = 0
+        self._rst = 0
+        self._fin = 0
         self._egress_bytes = 0
         self._ingress_bytes = 0
         self._egress_pkts = 0
@@ -126,6 +141,9 @@ class WindowAggregator:
             udp_count=self._udp,
             icmp_count=self._icmp,
             other_count=self._other,
+            syn_count=self._syn,
+            rst_count=self._rst,
+            fin_count=self._fin,
             top_src_ips=dict(self._src_ips.most_common(self.top_k)),
             top_dst_ips=dict(self._dst_ips.most_common(self.top_k)),
             top_dst_ports=dict(self._dst_ports.most_common(self.top_k)),
@@ -157,6 +175,13 @@ class WindowAggregator:
         proto = packet.protocol
         if proto == 6:
             self._tcp += 1
+            flags = packet.tcp_flags
+            if flags & _TH_SYN:
+                self._syn += 1
+            if flags & _TH_RST:
+                self._rst += 1
+            if flags & _TH_FIN:
+                self._fin += 1
         elif proto == 17:
             self._udp += 1
         elif proto == 1:

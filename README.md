@@ -77,6 +77,8 @@ Two complementary axes, so an attack that hides from one is caught by the other:
 | Burst-then-hide (masking) | median/MAD scale isn't inflated by the burst | robust statistics |
 | Volume-normal but structurally off (one-directional exfil, fan-out) | shape features scored directly | `egress_ratio`, `fan_out` |
 | Vertical port scan (many ports, one host) | per-destination port tracking | `max_ports_per_dst` |
+| SYN flood / half-open scan | connection-open (SYN) rate against a low baseline | `syn_count` |
+| Connection resets (scan rejections, reset attacks) | RST rate | `rst_count` |
 | Never-before-seen external server (quiet C2 / exfil) | persistent identity memory | `FirstSeenDetector` |
 | Periodic C2 beacon (small, regular timing) | inter-contact interval regularity | `BeaconDetector` |
 | Off-hours activity | the hour has its own baseline | time-of-day buckets |
@@ -176,15 +178,20 @@ technical-detail section:
   *cooked* `SLL`/`SLL2` (the `any` pseudo-device), raw IP, and loopback;
   Windows interfaces are Ethernet.
 - **Direction** — on Linux cooked captures (`-i any`) every packet carries the
-  kernel's own incoming/outgoing tag (`sll_pkttype`), so ingress/egress and the
-  `egress_ratio` feature are exact. Plain Ethernet interfaces — and all Windows
-  captures — get no such tag: direction stays UNKNOWN and `egress_ratio` sits
-  at its neutral 50. On Linux, one more reason `-i any` is the recommended
-  default.
-- **Features** — each 1-second window yields 9 volume/count signals (packets,
-  bytes, payload size, unique src/dst IPs, dst ports, TCP/UDP/ICMP) plus 3
-  *shape* signals: `egress_ratio` (% outbound), `fan_out` (dsts per src), and
-  `max_ports_per_dst` (most ports on one host — exposes a vertical scan).
+  kernel's own incoming/outgoing tag (`sll_pkttype`), so ingress/egress is exact.
+  On a plain Ethernet interface (`-i eth0`) libpcap gives no tag, so the Linux
+  backend **infers** it: it snapshots the host's own IPv4 addresses at open time
+  and marks a packet EGRESS if its source is local, INGRESS if its destination
+  is (loopback and pass-through traffic stay neutral). Either way `egress_ratio`
+  — the exfiltration-direction feature — is live. Windows captures get no tag and
+  no inference yet, so there `egress_ratio` sits at its neutral 50.
+- **Features** — each 1-second window yields volume/count signals (packets,
+  bytes, payload size, unique src/dst IPs, dst ports, TCP/UDP/ICMP, plus
+  `syn_count`/`rst_count` TCP-flag tallies that separate a SYN flood or scan
+  from ordinary traffic) plus 3 *shape* signals: `egress_ratio` (% outbound),
+  `fan_out` (dsts per src), and `max_ports_per_dst` (most ports on one host —
+  exposes a vertical scan). Any new key added here is picked up and baselined by
+  every detector automatically.
 - **Adaptive detector** — a robust **EWMA median + MAD** per `(time-bucket,
   feature)`, so outliers can't inflate the scale. The threshold self-tunes: a
   robust floor raised by a P²-tracked high quantile of recent scores, targeting a
@@ -271,6 +278,7 @@ python scripts/eval_unsw.py             # unsupervised separability on UNSW-NB15
 ```
 src/nad/
 ├── capture/      # libpcap binding (ctypes → libpcap.so / wpcap.dll) + Packet/Capture types
+│                 #   netlocal.py: host-IP discovery + direction inference
 ├── features.py   # WindowAggregator → WindowFeatures (volume + shape features)
 ├── stats.py      # RobustEwmaStat, P2Quantile, Cusum  (streaming, stdlib)
 ├── detect.py     # BaselineDetector (original fixed-threshold EWMA)
@@ -299,7 +307,7 @@ on Windows.
 | `pcap_open_live failed … Operation not permitted` | Not running as root — use `sudo` or `setcap cap_net_raw,cap_net_admin=eip` on the venv's `python3`. |
 | `sudo: nad: command not found` | `sudo` doesn't see the venv — use the full path: `sudo .venv/bin/nad …`. |
 | `nad` runs old code | `nad` points at another editable install — run `pip install -e .` in *this* folder. |
-| `egress_ratio` stuck at 50 | Direction unknown on a plain Ethernet interface — capture on `any` (cooked mode) to get kernel-tagged direction. |
+| `egress_ratio` stuck at 50 | Neither end of the traffic is a host-local IP (loopback, or pass-through seen in promiscuous mode), so no direction can be inferred — expected for `-i lo`. |
 | Many `처음 보는 외부 연결` early on | First-seen has no history yet (expected on short runs) — use `--no-behavioral` or let it learn. |
 | Alerts spam | Raise `--confirm` / `--robust-k`, or lower `--target-rate`. |
 
@@ -308,7 +316,8 @@ on Windows.
 **Done**
 
 - [x] Linux packet capture (libpcap via `ctypes` → `libpcap.so`) — Ethernet, cooked `any` (SLL/SLL2), raw, loopback
-- [x] Kernel-tagged ingress/egress direction on cooked captures
+- [x] Kernel-tagged ingress/egress direction on cooked captures; host-IP inference on plain Ethernet interfaces
+- [x] TCP-flag features (`syn_count`, `rst_count`) — SYN flood / scan / reset detection
 - [x] Adaptive per-time-bucket baselines with self-tuning threshold
 - [x] CUSUM low-and-slow drift detection
 - [x] Shape features (egress ratio, fan-out, per-host port scan)

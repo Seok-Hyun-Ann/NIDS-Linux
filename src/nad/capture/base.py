@@ -24,6 +24,7 @@ class Packet:
     direction: Direction
     payload: bytes         # truncated to the implementation's snap length
     total_len: int         # full IP datagram length, regardless of payload truncation
+    tcp_flags: int = 0     # raw TCP flag byte (FIN/SYN/RST/PSH/ACK…); 0 for non-TCP
 
 
 class Capture(ABC):

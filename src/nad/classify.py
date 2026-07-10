@@ -129,6 +129,24 @@ def classify(
             f"퍼지려는 행동일 수 있습니다." + (f" 대상: {dst_ips}." if dst_ips else ""),
             "의심되면 네트워크 연결을 잠시 끊고 백신 검사를 실행하세요.")
 
+    if feature == "syn_count" and above:
+        return Classification(
+            "연결 시도 폭주 (SYN)", severity,
+            f"연결을 새로 여는 요청(SYN)이 짧은 시간에 {times} 늘었습니다 "
+            f"({value:.0f}건). 정상 통신보다 연결 시도만 급증한 것으로, SYN 플러드 "
+            f"공격이나 포트 스캔일 수 있습니다."
+            + (f" 대상 포트: {dst_ports}." if dst_ports else "")
+            + (f" 대상: {dst_ips}." if dst_ips else ""),
+            "게임/스트리밍 등 방금 한 작업으로 설명되지 않으면 연결을 점검하세요.")
+
+    if feature == "rst_count" and above:
+        return Classification(
+            "연결 강제 종료 급증 (RST)", severity,
+            f"연결을 강제로 끊는 신호(RST)가 {times} 늘었습니다 ({value:.0f}건). "
+            f"닫힌 포트를 훑는 스캔에 대한 거부 응답이거나, 연결을 방해하는 "
+            f"리셋 공격일 수 있습니다." + (f" 대상: {dst_ips}." if dst_ips else ""),
+            "반복되면 어떤 프로그램·호스트와의 통신인지 확인하세요.")
+
     if feature == "unique_src_ips" and above:
         return Classification(
             "분산 공격(DDoS)/출발지 위조 의심", severity,
