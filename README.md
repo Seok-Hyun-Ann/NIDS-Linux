@@ -1,13 +1,16 @@
-# NIDS-Win(네트워크 침입 탐지 시스템-윈도우용) — Network Anomaly Detector for Windows
+# NIDS-Linux(네트워크 침입 탐지 시스템-리눅스용) — Network Anomaly Detector for Linux
 
-[![CI](https://github.com/Seok-Hyun-Ann/NIDS-Win/actions/workflows/ci.yml/badge.svg)](https://github.com/Seok-Hyun-Ann/NIDS-Win/actions/workflows/ci.yml)
+[![CI](https://github.com/Seok-Hyun-Ann/NIDS-Linux/actions/workflows/ci.yml/badge.svg)](https://github.com/Seok-Hyun-Ann/NIDS-Linux/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![Platform](https://img.shields.io/badge/platform-Windows-blue)
+![Platform](https://img.shields.io/badge/platform-Linux-orange)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-> A host-resident network anomaly detector for Windows that learns what *your*
+> A host-resident network anomaly detector for Linux that learns what *your*
 > machine's traffic looks like **at each time of day**, flags deviations, and
 > explains every alert in plain language.
+>
+> Linux port of [NIDS-Win](https://github.com/Seok-Hyun-Ann/NIDS-Win) — same
+> detection engine, capture rewritten on top of `libpcap.so`.
 
 It captures live traffic on a chosen interface, builds a self-tuning baseline,
 and raises alerts with both an everyday-Korean verdict and the exact statistics
@@ -24,7 +27,7 @@ in the detection path. Pure standard-library statistics.
 
 ## Contents
 
-- [Why NIDS-Win?](#why-nids-win)
+- [Why NIDS-Linux?](#why-nids-linux)
 - [What it detects](#what-it-detects)
 - [Getting started](#getting-started)
 - [The dashboard](#the-dashboard)
@@ -35,11 +38,11 @@ in the detection path. Pure standard-library statistics.
 - [Status and roadmap](#status-and-roadmap)
 - [Privacy](#privacy)
 
-## Why NIDS-Win?
+## Why NIDS-Linux?
 
 Most consumer IDS/EDR tools tell you "we noticed something" — rarely *why*, and a
 single fixed threshold either floods you with false alarms or misses real attacks,
-because nobody uses a computer the same way every day. NIDS-Win does the opposite:
+because nobody uses a computer the same way every day. NIDS-Linux does the opposite:
 
 - **Per-time-of-day baselines** — a separate baseline per hour bucket.
 - **The threshold tunes itself** — set from the data to hit a target false-alarm *rate*.
@@ -66,30 +69,31 @@ Two complementary axes, so an attack that hides from one is caught by the other:
 
 **Requirements**
 
-- Windows 10 / 11 (64-bit) — for live capture
+- Linux (kernel with `AF_PACKET`; any mainstream distro) — for live capture
 - Python 3.11+
-- [Npcap](https://npcap.com/) in **WinPcap API-compatible Mode**
-- Administrator privileges to capture packets
+- `libpcap` — `sudo apt install libpcap0.8` (Debian/Ubuntu) or `sudo dnf install libpcap` (Fedora/RHEL)
+- root (`sudo`) or `CAP_NET_RAW` to capture packets
 
-No MSVC Build Tools or Visual Studio needed — capture talks to `wpcap.dll`
-directly through `ctypes`. (The [offline evaluation](#development) scripts need
-none of this and run on any OS.)
+No compiler or dev headers needed — capture talks to `libpcap.so` directly
+through `ctypes`. (The [offline evaluation](#development) scripts need none of
+this and run on any OS.)
 
 **Install**
 
-```powershell
-git clone https://github.com/Seok-Hyun-Ann/NIDS-Win.git
-cd NIDS-Win
-python -m venv .venv
-.venv\Scripts\Activate.ps1
+```bash
+git clone https://github.com/Seok-Hyun-Ann/NIDS-Linux.git
+cd NIDS-Linux
+python3 -m venv .venv          # fails with "ensurepip is not available"?
+                               #   → sudo apt install python3-venv, then retry
+source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-**Run the dashboard** (terminal **as Administrator**)
+**Run the dashboard**
 
-```powershell
-nad list-interfaces                                    # find your NIC's \Device\NPF_{...}
-nad serve -i "\Device\NPF_{A5CB34C2-...}" --detector adaptive
+```bash
+nad list-interfaces                    # eth0, wlan0, any, lo, ...
+sudo .venv/bin/nad serve -i any --detector adaptive
 #   → http://127.0.0.1:8000
 ```
 
@@ -97,8 +101,17 @@ The first ~30 seconds are a warmup. Leave it running for hours/days so the
 per-hour baselines settle — they are persisted, so a restart does **not** reset
 the learning.
 
-> **Finding your interface:** the `\Device\NPF_{...}` strings are GUIDs. Match
-> them against `Get-NetAdapter | Select Name, InterfaceGuid` in PowerShell.
+> **Which interface?** Plain interface names (`ip link` shows them). The `any`
+> pseudo-device captures every interface at once *and* lets the kernel tag each
+> packet as inbound/outbound, which makes the `egress_ratio` (exfiltration
+> direction) feature fully live — on a single Ethernet interface direction is
+> inferred less directly. `any` is the recommended default.
+
+> **Running without sudo:** grant the capture capability to your venv's Python
+> once, then `nad` works as a normal user:
+> ```bash
+> sudo setcap cap_net_raw,cap_net_admin=eip $(readlink -f .venv/bin/python3)
+> ```
 
 ## The dashboard
 
@@ -127,8 +140,8 @@ technical-detail section:
 
 ```
 ┌────────────┐  packets  ┌────────────┐ features ┌────────────────────────┐
-│ Npcap      │ ────────▶ │ Window     │ ───────▶ │ AdaptiveDetector       │
-│ (wpcap.dll)│           │ Aggregator │          │  robust Z per bucket   │─┐
+│ libpcap    │ ────────▶ │ Window     │ ───────▶ │ AdaptiveDetector       │
+│(libpcap.so)│           │ Aggregator │          │  robust Z per bucket   │─┐
 └────────────┘           │ (1s)       │          │  + auto threshold      │ │
                          └─────┬──────┘          │  + CUSUM (slow drift)  │ │ alerts
                                │                 ├────────────────────────┤ ├─▶ classify ─▶ SQLite ─▶ dashboard
@@ -137,6 +150,10 @@ technical-detail section:
                                                  └────────────────────────┘
 ```
 
+- **Capture** — direct `ctypes` calls into `libpcap.so`; the link layer is
+  detected at open time (Ethernet, Linux cooked `SLL`/`SLL2` for `any`, raw IP,
+  loopback). On the cooked link types the kernel reports packet direction, so
+  ingress/egress is exact.
 - **Features** — each 1-second window yields 9 volume/count signals (packets,
   bytes, payload size, unique src/dst IPs, dst ports, TCP/UDP/ICMP) plus 3
   *shape* signals: `egress_ratio` (% outbound), `fan_out` (dsts per src), and
@@ -177,7 +194,7 @@ fixed-threshold EWMA detector, kept for comparison.
 
 ```text
 # core
-  -i, --interface     Npcap device string (required)
+  -i, --interface     interface name (eth0, wlan0, any…)  (required)
   -f, --filter        BPF filter                         [default: ip]
   -p, --port          HTTP port                          [default: 8000]
       --window-seconds  aggregation window (s)           [default: 1.0]
@@ -204,16 +221,15 @@ fixed-threshold EWMA detector, kept for comparison.
 
 **Tests** (no elevation needed):
 
-```powershell
+```bash
 pytest                          # full suite
 pytest tests/test_adaptive.py   # one module
 pytest -k "cusum"               # by name
 ```
 
-**Try it without a NIC** — the evaluation scripts need no Npcap or Administrator.
-On a Korean console, run `$env:PYTHONIOENCODING="utf-8"` first.
+**Try it without capturing** — the evaluation scripts need no libpcap or root.
 
-```powershell
+```bash
 python scripts/evaluate.py              # synthetic benchmark: attacks vs detector stacks
 python scripts/evaluate.py --sweep      # low-and-slow detection across ramp speeds
 python scripts/replay_pcap.py a.pcap b.pcap   # replay real pcaps through the pipeline
@@ -227,7 +243,7 @@ python scripts/eval_unsw.py             # unsupervised separability on UNSW-NB15
 
 ```
 src/nad/
-├── capture/      # Npcap binding (ctypes → wpcap.dll) + Packet/Capture types
+├── capture/      # libpcap binding (ctypes → libpcap.so / wpcap.dll) + Packet/Capture types
 ├── features.py   # WindowAggregator → WindowFeatures (volume + shape features)
 ├── stats.py      # RobustEwmaStat, P2Quantile, Cusum  (streaming, stdlib)
 ├── detect.py     # BaselineDetector (original fixed-threshold EWMA)
@@ -243,22 +259,29 @@ docs/             # adaptive-detection-design.md
 tests/
 ```
 
+The Windows/Npcap backend (`capture/windows_npcap.py`) is kept intact — the
+capture factory picks the right backend per OS, so the same codebase still runs
+on Windows.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| `wpcap.dll not found` | Npcap missing or not in WinPcap-compatible mode. |
-| `pcap_open_live failed` | Terminal not running as Administrator. |
+| `libpcap not found` | Install it: `sudo apt install libpcap0.8` / `sudo dnf install libpcap`. |
+| `ensurepip is not available` on `python3 -m venv` | Debian/Ubuntu ships venv separately: `sudo apt install python3-venv`. |
+| `pcap_open_live failed … Operation not permitted` | Not running as root — use `sudo` or `setcap cap_net_raw,cap_net_admin=eip` on the venv's `python3`. |
+| `sudo: nad: command not found` | `sudo` doesn't see the venv — use the full path: `sudo .venv/bin/nad …`. |
 | `nad` runs old code | `nad` points at another editable install — run `pip install -e .` in *this* folder. |
+| `egress_ratio` stuck at 50 | Direction unknown on a plain Ethernet interface — capture on `any` (cooked mode) to get kernel-tagged direction. |
 | Many `처음 보는 외부 연결` early on | First-seen has no history yet (expected on short runs) — use `--no-behavioral` or let it learn. |
-| Korean/emoji garbled in scripts | `$env:PYTHONIOENCODING="utf-8"` before running. |
 | Alerts spam | Raise `--confirm` / `--robust-k`, or lower `--target-rate`. |
 
 ## Status and roadmap
 
 **Done**
 
-- [x] Windows packet capture (Npcap via `ctypes` → `wpcap.dll`) — verified on Win 11
+- [x] Linux packet capture (libpcap via `ctypes` → `libpcap.so`) — Ethernet, cooked `any` (SLL/SLL2), raw, loopback
+- [x] Kernel-tagged ingress/egress direction on cooked captures
 - [x] Adaptive per-time-bucket baselines with self-tuning threshold
 - [x] CUSUM low-and-slow drift detection
 - [x] Shape features (egress ratio, fan-out, per-host port scan)
@@ -267,15 +290,17 @@ tests/
 - [x] Baseline persistence across restarts (no re-warmup); SQLite WAL storage
 - [x] FastAPI live dashboard
 - [x] PCAP replay mode for repeatable testing
+- [x] Windows backend retained (cross-platform capture factory)
 
 **Planned**
 
-- [ ] Windows Service installer (run without an open Administrator terminal)
+- [ ] systemd unit (run as a service, start on boot)
 - [ ] Optional auth / TLS for remote dashboard access
+- [ ] IPv6 capture path
 
 ## Privacy
 
-NIDS-Win never connects out (the evaluation scripts download only datasets you
+NIDS-Linux never connects out (the evaluation scripts download only datasets you
 choose). Packet headers, capped 256-byte payload prefixes, alerts, and the
 learned destination memory stay in the local SQLite file you point `--db` at.
 Delete the file to wipe history.
