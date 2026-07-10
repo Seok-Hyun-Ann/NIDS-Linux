@@ -157,7 +157,7 @@ technical-detail section:
 ```
 ┌────────────┐  packets  ┌────────────┐ features ┌────────────────────────┐
 │ libpcap    │ ────────▶ │ Window     │ ───────▶ │ AdaptiveDetector       │
-│(libpcap.so)│           │ Aggregator │          │  robust Z per bucket   │─┐
+│  (ctypes)  │           │ Aggregator │          │  robust Z per bucket   │─┐
 └────────────┘           │ (1s)       │          │  + auto threshold      │ │
                          └─────┬──────┘          │  + CUSUM (slow drift)  │ │ alerts
                                │                 ├────────────────────────┤ ├─▶ classify ─▶ SQLite ─▶ dashboard
@@ -166,10 +166,21 @@ technical-detail section:
                                                  └────────────────────────┘
 ```
 
-- **Capture** — direct `ctypes` calls into `libpcap.so`; the link layer is
-  detected at open time (Ethernet, Linux cooked `SLL`/`SLL2` for `any`, raw IP,
-  loopback). On the cooked link types the kernel reports packet direction, so
-  ingress/egress is exact.
+- **Capture** — direct `ctypes` calls into the platform's libpcap, chosen at
+  runtime by the capture factory: `libpcap.so` on Linux (packets come from the
+  kernel's `AF_PACKET` socket), Npcap's `wpcap.dll` on Windows. Either way the
+  BPF filter (`-f`, default `ip`) is compiled and run **below Python** (in the
+  kernel / the Npcap driver), so uninteresting traffic never crosses into the
+  process. On Linux the link layer is detected at open time via
+  `pcap_datalink()` and decoded accordingly: Ethernet (`eth0`, `wlan0`, …),
+  *cooked* `SLL`/`SLL2` (the `any` pseudo-device), raw IP, and loopback;
+  Windows interfaces are Ethernet.
+- **Direction** — on Linux cooked captures (`-i any`) every packet carries the
+  kernel's own incoming/outgoing tag (`sll_pkttype`), so ingress/egress and the
+  `egress_ratio` feature are exact. Plain Ethernet interfaces — and all Windows
+  captures — get no such tag: direction stays UNKNOWN and `egress_ratio` sits
+  at its neutral 50. On Linux, one more reason `-i any` is the recommended
+  default.
 - **Features** — each 1-second window yields 9 volume/count signals (packets,
   bytes, payload size, unique src/dst IPs, dst ports, TCP/UDP/ICMP) plus 3
   *shape* signals: `egress_ratio` (% outbound), `fan_out` (dsts per src), and
